@@ -141,6 +141,8 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  p->syscall_trace=0;   //When creating new process, syscall_trace is set to be 0
+
   return p;
 }
 
@@ -314,6 +316,8 @@ fork(void)
   acquire(&np->lock);
   np->state = RUNNABLE;
   release(&np->lock);
+
+  np->syscall_trace=p->syscall_trace; //child inherits parent syscall_trace
 
   return pid;
 }

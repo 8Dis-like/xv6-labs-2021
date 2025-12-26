@@ -193,6 +193,12 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
+<<<<<<< HEAD
+=======
+	$U/_sleep\
+	$U/_pingpong\
+	$U/_trace\
+>>>>>>> 8b8bd80 (trace implementation)
 
 
 
