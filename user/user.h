@@ -23,6 +23,7 @@ int getpid(void);
 char* sbrk(int);
 int sleep(int);
 int uptime(void);
+int trace(int); // process in user mode locate the entrance of system call for trace 
 
 // ulib.c
 int stat(const char*, struct stat*);
