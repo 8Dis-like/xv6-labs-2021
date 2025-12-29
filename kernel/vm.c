@@ -490,28 +490,75 @@ int copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+// kernel/vm.c
 
-int pgtblprint(pagetable_t pagetable, int depth)
+void
+proc_free_kernel_pagetable(pagetable_t kpt)
 {
-  //there are 2^9 = 512 PTEs in a page table.
-  for(int i=0;i<512;i++){
-    pte_t pte=pagetable[i];
-    if(pte&PTE_V){ //if valid, print formatting pagetable  
-      printf("..");
-      for(int j=0;j<depth;++j)printf("..");
-      printf("%d: pte %p pa %p\n",i,pte,PTE2PA(pte));
+  // 1. Unmap the kernel stack (if it wasn't already unmapped/freed)
+  // (We usually handle stack freeing in freeproc, so we skip it here or assume it's done)
 
-      //if not leaf,  recursively print child nodes
-      if((pte&(PTE_R|PTE_W|PTE_X))==0){
-        //this PTE points to a  lower-level page table
-        uint64 child=PTE2PA(pte);
-        pgtblprint((pagetable_t)child,depth+1);
-      }
+  // 2. Free the user-mirror mappings (Low memory) without freeing physical pages
+  // We can just iterate 0..PLIC (start of device mappings) 
+  // However, simpler approach: Just walk the tree.
+  // We know that level 2 and level 1 are always page table directories.
+  // Level 0 contains the leaves.
+  // We only want to free the pages at Level 2, 1, and 0 directories themselves.
+  
+  // Actually, standard 'freewalk' crashes if leaves are valid. 
+  // We must clear the leaves first.
+  
+  // Since we can't easily distinguish mapped kernel devices from mapped user memory
+  // without a range, usually we just free the page table pages blindly 
+  // assuming the leaves are NOT freed.
+  
+  // SAFE IMPLEMENTATION:
+  for(int i = 0; i < 512; i++){
+    pte_t pte = kpt[i];
+    if((pte & PTE_V)){
+       uint64 pa = PTE2PA(pte);
+       // If this is a leaf page (RWX flags set), DO NOT recurse, DO NOT kfree.
+       // However, in RISC-V sv39, top level entries are rarely leaves for us.
+       // We assume standard 3-level tree.
+       // Check if it is a leaf:
+       if((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+          // It's a directory (intermediate) page. Recurse.
+          proc_free_kernel_pagetable((pagetable_t)pa);
+          kpt[i] = 0;
+       } 
+       // If it IS a leaf, we do nothing (we leave the physical memory alone).
     }
   }
-  return 0;
+  kfree((void*)kpt);
 }
 
+// Helper function to print page table recursively
+int
+pgtblprint(pagetable_t pagetable, int depth)
+{
+  // FIX 1: Add the loop to check all 512 PTEs
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    
+    if(pte & PTE_V){
+      // FIX 2: Indentation logic
+      // We rely ONLY on the loop. Depth 1 = "..", Depth 2 = "....", etc.
+      for(int j = 0; j < depth; j++)
+        printf(" ..");
+        
+      printf("%d: pte %p pa %p\n", i, pte, PTE2PA(pte));
+
+      // Recurse if it is a directory (not a leaf)
+      // (Leaf pages have at least one of R, W, X bits set)
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        uint64 child = PTE2PA(pte);
+        pgtblprint((pagetable_t)child, depth + 1);
+      }
+    }
+  }return 0;
+}
+
+// The main entry point called from exec.c
 int vmprint(pagetable_t pagetable){
   printf("page table %p\n", pagetable);
   return pgtblprint(pagetable, 0);

@@ -173,7 +173,10 @@ int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             vmprint(pagetable_t pagetable); //print pagetable
-
+pte_t*          walk(pagetable_t, uint64, int);
+void            proc_free_kernel_pagetable(pagetable_t);
+int             u2kvmcopy(pagetable_t, pagetable_t, uint64, uint64);
+pagetable_t     kvmmake(void); // If you haven't added this one yet
 // plic.c
 void            plicinit(void);
 void            plicinithart(void);

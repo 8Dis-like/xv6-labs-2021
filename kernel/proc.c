@@ -123,10 +123,12 @@ found:
   // LAB 3 CHANGE: Allocate a kernel page table for this process
   p->kpagetable = kvmmake();
   if(p->kpagetable == 0) {
+    printf("allocproc: kvmmake failed!\n"); // <--- Add this
     freeproc(p);
     release(&p->lock);
     return 0;
   }
+
 
   // LAB 3 CHANGE: Allocate a physical page for the kernel stack
   char *pa = kalloc();
@@ -168,8 +170,6 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
-
-  p->syscall_trace=0;   //When creating new process, syscall_trace is set to be 0
 
   return p;
 }
@@ -302,25 +302,6 @@ userinit(void)
   release(&p->lock);
 }
 
-// Grow or shrink user memory by n bytes.
-// Return 0 on success, -1 on failure.
-int
-growproc(int n)
-{
-  uint sz;
-  struct proc *p = myproc();
-
-  sz = p->sz;
-  if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
-      return -1;
-    }
-  } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
-  }
-  p->sz = sz;
-  return 0;
-}
 
 // Create a new process, copying the parent.
 // Sets up child kernel stack to return as if from fork() system call.
@@ -738,37 +719,6 @@ either_copyin(void *dst, int user_src, uint64 src, uint64 len)
   }
 }
 
-// Replace the original copyin with this:
-int
-copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
-{
-  uint64 sz = myproc()->sz;
-  if(srcva >= sz || srcva+len >= sz || srcva+len < srcva)
-    return -1;
-  
-  // Direct copy because srcva is mapped in the kernel page table now!
-  memmove(dst, (void*)srcva, len);
-  return 0;
-}
-
-// Replace the original copyinstr with this:
-int
-copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
-{
-  uint64 sz = myproc()->sz;
-  int i;
-
-  for(i = 0; i < max; i++){
-    if(srcva + i >= sz)
-      return -1;
-    
-    // Direct access
-    dst[i] = *(char*)(srcva + i);
-    if(dst[i] == '\0')
-      return 0;
-  }
-  return -1;
-}
 
 // Print a process listing to console.  For debugging.
 // Runs when user types ^P on console.
@@ -797,37 +747,4 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
-}
-
-// Copy user mappings to kernel page table.
-// Starts from 0 usually, or oldsz for growing.
-int
-u2kvmcopy(pagetable_t upagetable, pagetable_t kpagetable, uint64 start, uint64 end)
-{
-  pte_t *pte;
-  uint64 pa, i;
-  uint64 flags;
-
-  start = PGROUNDUP(start);
-  for(i = start; i < end; i += PGSIZE){
-    // Walk the USER table to find the physical address
-    if((pte = walk(upagetable, i, 0)) == 0)
-      panic("u2kvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("u2kvmcopy: page not present");
-    
-    pa = PTE2PA(*pte);
-    
-    // IMPORTANT: We must strip PTE_U so the kernel can access it.
-    // We keep Read/Write/Exec flags.
-    flags = PTE_FLAGS(*pte) & (~PTE_U);
-
-    // Map into the KERNEL table
-    if(mappages(kpagetable, i, PGSIZE, pa, flags) != 0){
-      // On failure, unmap what we just did
-      uvmunmap(kpagetable, start, (i-start)/PGSIZE, 0); 
-      return -1;
-    }
-  }
-  return 0;
 }
