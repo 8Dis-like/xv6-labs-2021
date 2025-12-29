@@ -376,7 +376,38 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   }
   return 0;
 }
+// Copy user mappings to kernel page table.
+// Starts from 0 usually, or oldsz for growing.
+int
+u2kvmcopy(pagetable_t upagetable, pagetable_t kpagetable, uint64 start, uint64 end)
+{
+  pte_t *pte;
+  uint64 pa, i;
+  uint64 flags;
 
+  start = PGROUNDUP(start);
+  for(i = start; i < end; i += PGSIZE){
+    // Walk the USER table to find the physical address
+    if((pte = walk(upagetable, i, 0)) == 0)
+      panic("u2kvmcopy: pte should exist");
+    if((*pte & PTE_V) == 0)
+      panic("u2kvmcopy: page not present");
+    
+    pa = PTE2PA(*pte);
+    
+    // IMPORTANT: We must strip PTE_U so the kernel can access it.
+    // We keep Read/Write/Exec flags.
+    flags = PTE_FLAGS(*pte) & (~PTE_U);
+
+    // Map into the KERNEL table
+    if(mappages(kpagetable, i, PGSIZE, pa, flags) != 0){
+      // On failure, unmap what we just did
+      uvmunmap(kpagetable, start, (i-start)/PGSIZE, 0); 
+      return -1;
+    }
+  }
+  return 0;
+}
 // Copy from user to kernel.
 // Copy len bytes to dst from virtual address srcva in a given page table.
 // Return 0 on success, -1 on error.

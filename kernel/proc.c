@@ -344,6 +344,13 @@ fork(void)
   }
   np->sz = p->sz;
 
+  // LAB 3 CHANGE: Copy child's new user mappings to child's kernel page table
+  if(u2kvmcopy(np->pagetable, np->kpagetable, 0, np->sz) < 0){
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
+
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -373,6 +380,47 @@ fork(void)
   return pid;
 }
 
+int
+growproc(int n)
+{
+  uint sz;
+  struct proc *p = myproc();
+
+  sz = p->sz;
+  if(n > 0){
+    // LAB 3 CHANGE: Check PLIC limit.
+    // Since the kernel page table maps user content directly, we must ensure
+    // the user process doesn't grow into the memory range reserved for
+    // interrupt controllers (PLIC starts at 0xC000000).
+    if (sz + n > PLIC)
+      return -1;
+
+    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+      return -1;
+    }
+
+    // LAB 3 CHANGE: Mirror the new user pages into the kernel page table.
+    // If this fails, we must rollback the uvmalloc to keep states consistent.
+    if(u2kvmcopy(p->pagetable, p->kpagetable, p->sz, sz) < 0){
+      uvmdealloc(p->pagetable, sz, p->sz);
+      return -1;
+    }
+
+  } else if(n < 0){
+    sz = uvmdealloc(p->pagetable, sz, sz + n);
+
+    // LAB 3 CHANGE: Remove the mappings from the kernel page table.
+    // PGROUNDUP is necessary because sz might not be page-aligned.
+    // We pass '0' as the last argument to uvmunmap because uvmdealloc
+    // has already freed the physical memory; we just need to delete the PTEs.
+    if (PGROUNDUP(sz) < PGROUNDUP(p->sz)) {
+       int npages = (PGROUNDUP(p->sz) - PGROUNDUP(sz)) / PGSIZE;
+       uvmunmap(p->kpagetable, PGROUNDUP(sz), npages, 0);
+    }
+  }
+  p->sz = sz;
+  return 0;
+}
 // Pass p's abandoned children to init.
 // Caller must hold wait_lock.
 void
@@ -690,6 +738,38 @@ either_copyin(void *dst, int user_src, uint64 src, uint64 len)
   }
 }
 
+// Replace the original copyin with this:
+int
+copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
+{
+  uint64 sz = myproc()->sz;
+  if(srcva >= sz || srcva+len >= sz || srcva+len < srcva)
+    return -1;
+  
+  // Direct copy because srcva is mapped in the kernel page table now!
+  memmove(dst, (void*)srcva, len);
+  return 0;
+}
+
+// Replace the original copyinstr with this:
+int
+copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
+{
+  uint64 sz = myproc()->sz;
+  int i;
+
+  for(i = 0; i < max; i++){
+    if(srcva + i >= sz)
+      return -1;
+    
+    // Direct access
+    dst[i] = *(char*)(srcva + i);
+    if(dst[i] == '\0')
+      return 0;
+  }
+  return -1;
+}
+
 // Print a process listing to console.  For debugging.
 // Runs when user types ^P on console.
 // No lock to avoid wedging a stuck machine further.
@@ -717,4 +797,37 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// Copy user mappings to kernel page table.
+// Starts from 0 usually, or oldsz for growing.
+int
+u2kvmcopy(pagetable_t upagetable, pagetable_t kpagetable, uint64 start, uint64 end)
+{
+  pte_t *pte;
+  uint64 pa, i;
+  uint64 flags;
+
+  start = PGROUNDUP(start);
+  for(i = start; i < end; i += PGSIZE){
+    // Walk the USER table to find the physical address
+    if((pte = walk(upagetable, i, 0)) == 0)
+      panic("u2kvmcopy: pte should exist");
+    if((*pte & PTE_V) == 0)
+      panic("u2kvmcopy: page not present");
+    
+    pa = PTE2PA(*pte);
+    
+    // IMPORTANT: We must strip PTE_U so the kernel can access it.
+    // We keep Read/Write/Exec flags.
+    flags = PTE_FLAGS(*pte) & (~PTE_U);
+
+    // Map into the KERNEL table
+    if(mappages(kpagetable, i, PGSIZE, pa, flags) != 0){
+      // On failure, unmap what we just did
+      uvmunmap(kpagetable, start, (i-start)/PGSIZE, 0); 
+      return -1;
+    }
+  }
+  return 0;
 }

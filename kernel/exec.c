@@ -108,12 +108,32 @@ exec(char *path, char **argv)
       last = s+1;
   safestrcpy(p->name, last, sizeof(p->name));
     
+  // LAB 3 CHANGE: Initialize a new kernel page table for the new process image
+  pagetable_t kpagetable = kvmmake();
+  if(kpagetable == 0)
+    goto bad;
+
+  // LAB 3 CHANGE: Copy the new user mappings into the new kernel page table
+  // We mirror the user memory (0..sz) into the kernel table.
+  if(u2kvmcopy(pagetable, kpagetable, 0, sz) < 0){
+    proc_free_kernel_pagetable(kpagetable); // Free the table wrapper if fail
+    goto bad;
+  }
+
   // Commit to the user image.
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
   p->sz = sz;
   p->trapframe->epc = elf.entry;  // initial program counter = main
   p->trapframe->sp = sp; // initial stack pointer
+
+  // LAB 3 CHANGE: Swap the kernel page table
+  pagetable_t oldkpagetable = p->kpagetable;
+  p->kpagetable = kpagetable;
+
+  // Free the OLD kernel page table (just the page table wrapper, not memory)
+  proc_free_kernel_pagetable(oldkpagetable);
+
   proc_freepagetable(oldpagetable, oldsz);
 
   return argc; // this ends up in a0, the first argument to main(argc, argv)
