@@ -120,6 +120,34 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
+  // LAB 3 CHANGE: Allocate a kernel page table for this process
+  p->kpagetable = kvmmake();
+  if(p->kpagetable == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // LAB 3 CHANGE: Allocate a physical page for the kernel stack
+  char *pa = kalloc();
+  if(pa == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  
+  // LAB 3 CHANGE: Map the stack into the process's kernel page table
+  // We map it to KSTACK(0) (a high virtual address) because the table is private,
+  // so we don't need unique stack addresses for every process like the global table did.
+  uint64 va = KSTACK(0);
+  if(mappages(p->kpagetable, va, PGSIZE, (uint64)pa, PTE_R | PTE_W) != 0) {
+    kfree(pa);
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  p->kstack = va; // Save the virtual address for context setup
+
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -141,6 +169,8 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  p->syscall_trace=0;   //When creating new process, syscall_trace is set to be 0
+
   return p;
 }
 
@@ -156,6 +186,31 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
+
+  // LAB 3 CHANGE: Free the kernel stack
+  if(p->kstack) {
+    // We need to find the physical address of the stack to free it.
+    // Assuming you can walk the page table or have a helper.
+    // If you don't have a helper, you can use PTE2PA(walk(...)).
+    // A clean way is to call a helper function:
+    // kfree_stack_page(p->kpagetable, p->kstack);
+    
+    // Or doing it manually if you have access to `walk` in proc.c:
+    pte_t *pte = walk(p->kpagetable, p->kstack, 0);
+    if(pte && (*pte & PTE_V))
+      kfree((void*)PTE2PA(*pte));
+    
+    p->kstack = 0;
+  }
+
+  // LAB 3 CHANGE: Free the kernel page table container
+  if(p->kpagetable) {
+    // Use the helper you wrote in vm.c that frees the directory pages
+    // BUT NOT the leaf physical pages (text/data).
+    proc_free_kernel_pagetable(p->kpagetable);
+  }
+  p->kpagetable = 0;
+
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -453,7 +508,16 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        // LAB 3 CHANGE: Switch to the process's kernel page table
+        w_satp(MAKE_SATP(p->kpagetable));
+        sfence_vma(); // Flush TLB
+
         swtch(&c->context, &p->context);
+
+        // LAB 3 CHANGE: Switch back to the GLOBAL kernel page table
+        // kvminithart() reloads the global kernel_pagetable into SATP
+        kvminithart(); 
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.

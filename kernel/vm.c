@@ -15,38 +15,50 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
-// Make a direct-map page table for the kernel.
+// kernel/vm.c
+
+// Create a kernel page table for a process.
+// (Adapted from kvminit)
 pagetable_t
 kvmmake(void)
 {
-  pagetable_t kpgtbl;
+  pagetable_t kpt;
 
-  kpgtbl = (pagetable_t) kalloc();
-  memset(kpgtbl, 0, PGSIZE);
+  kpt = (pagetable_t) kalloc();
+  memset(kpt, 0, PGSIZE);
 
   // uart registers
-  kvmmap(kpgtbl, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  if(mappages(kpt, UART0, PGSIZE, UART0, PTE_R | PTE_W) != 0)
+    goto bad;
 
-  // virtio mmio disk interface
-  kvmmap(kpgtbl, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  // virtio mmio registers
+  if(mappages(kpt, VIRTIO0, PGSIZE, VIRTIO0, PTE_R | PTE_W) != 0)
+    goto bad;
 
   // PLIC
-  kvmmap(kpgtbl, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  if(mappages(kpt, PLIC, 0x400000, PLIC, PTE_R | PTE_W) != 0)
+    goto bad;
 
   // map kernel text executable and read-only.
-  kvmmap(kpgtbl, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+  if(mappages(kpt, KERNBASE, (uint64)etext-KERNBASE, KERNBASE, PTE_R | PTE_X) != 0)
+    goto bad;
 
   // map kernel data and the physical RAM we'll make use of.
-  kvmmap(kpgtbl, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+  if(mappages(kpt, (uint64)etext, PHYSTOP-(uint64)etext, (uint64)etext, PTE_R | PTE_W) != 0)
+    goto bad;
 
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
-  kvmmap(kpgtbl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  if(mappages(kpt, TRAMPOLINE, PGSIZE, (uint64)trampoline, PTE_R | PTE_X) != 0)
+    goto bad;
 
-  // map kernel stacks
-  proc_mapstacks(kpgtbl);
-  
-  return kpgtbl;
+  return kpt;
+
+ bad:
+  // You might need a helper to free kpt here if mappages fails, 
+  // but simpler implementations often just panic or assume success for labs.
+  panic("kvmmake");
+  return 0;
 }
 
 // Initialize the one kernel_pagetable
