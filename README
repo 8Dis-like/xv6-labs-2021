@@ -46,4 +46,4 @@ https://github.com/riscv/riscv-gnu-toolchain, and qemu compiled for
 riscv64-softmmu. Once they are installed, and in your shell
 search path, you can run "make qemu".
 
-Why does Github only count commits to main/master? Unfair! Wrapping you up! Github!
+Why does Github only count commits to main/master? Unfair! Wrapping Git up! 
