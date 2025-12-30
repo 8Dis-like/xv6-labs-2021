@@ -22,44 +22,26 @@ extern char trampoline[]; // trampoline.S
 pagetable_t
 kvmmake(void)
 {
-  pagetable_t kpt;
-
-  kpt = (pagetable_t) kalloc();
+  pagetable_t kpt = (pagetable_t) kalloc();
   memset(kpt, 0, PGSIZE);
 
-  // uart registers
-  if(mappages(kpt, UART0, PGSIZE, UART0, PTE_R | PTE_W) != 0)
-    goto bad;
+  // 1. UART (Console) - CRITICAL for printf
+  mappages(kpt, UART0, PGSIZE, UART0, PTE_R | PTE_W);
 
-  // virtio mmio registers
-  if(mappages(kpt, VIRTIO0, PGSIZE, VIRTIO0, PTE_R | PTE_W) != 0)
-    goto bad;
+  // 2. VIRTIO (Disk)
+  mappages(kpt, VIRTIO0, PGSIZE, VIRTIO0, PTE_R | PTE_W);
 
-  // PLIC
-  if(mappages(kpt, PLIC, 0x400000, PLIC, PTE_R | PTE_W) != 0)
-    goto bad;
+  // 3. PLIC (Interrupts) - CRITICAL
+  mappages(kpt, PLIC, 0x400000, PLIC, PTE_R | PTE_W);
 
-  // map kernel text executable and read-only.
-  if(mappages(kpt, KERNBASE, (uint64)etext-KERNBASE, KERNBASE, PTE_R | PTE_X) != 0)
-    goto bad;
+  // 4. Kernel Code/Data
+  mappages(kpt, KERNBASE, (uint64)etext-KERNBASE, KERNBASE, PTE_R | PTE_X);
+  mappages(kpt, (uint64)etext, PHYSTOP-(uint64)etext, (uint64)etext, PTE_R | PTE_W);
 
-  // map kernel data and the physical RAM we'll make use of.
-  if(mappages(kpt, (uint64)etext, PHYSTOP-(uint64)etext, (uint64)etext, PTE_R | PTE_W) != 0)
-    goto bad;
-
-  // map the trampoline for trap entry/exit to
-  // the highest virtual address in the kernel.
-  if(mappages(kpt, TRAMPOLINE, PGSIZE, (uint64)trampoline, PTE_R | PTE_X) != 0)
-    goto bad;
+  // 5. TRAMPOLINE - CRITICAL for returning to user space
+  mappages(kpt, TRAMPOLINE, PGSIZE, (uint64)trampoline, PTE_R | PTE_X);
 
   return kpt;
-
- bad:
-  // You might need a helper to free kpt here if mappages fails, 
-  // but simpler implementations often just panic or assume success for labs.
-  panic("kvmmake");
-  return 0;
-
 }
 
 // Initialize the one kernel_pagetable
@@ -533,33 +515,36 @@ proc_free_kernel_pagetable(pagetable_t kpt)
 }
 
 // Helper function to print page table recursively
-int
+void
 pgtblprint(pagetable_t pagetable, int depth)
 {
-  // FIX 1: Add the loop to check all 512 PTEs
+  // FIX: Iterate through all 512 Page Table Entries (PTEs)
   for(int i = 0; i < 512; i++){
     pte_t pte = pagetable[i];
     
+    // Only print valid pages
     if(pte & PTE_V){
-      // FIX 2: Indentation logic
-      // We rely ONLY on the loop. Depth 1 = "..", Depth 2 = "....", etc.
+      // Print indentation dots based on depth
       for(int j = 0; j < depth; j++)
         printf(" ..");
         
+      // Print the index, PTE bits, and physical address
       printf("%d: pte %p pa %p\n", i, pte, PTE2PA(pte));
 
-      // Recurse if it is a directory (not a leaf)
-      // (Leaf pages have at least one of R, W, X bits set)
+      // Recurse if it is a directory (Not a leaf)
+      // A leaf has at least one of R/W/X set. If none are set, it's a directory.
       if((pte & (PTE_R|PTE_W|PTE_X)) == 0){
         uint64 child = PTE2PA(pte);
         pgtblprint((pagetable_t)child, depth + 1);
       }
     }
-  }return 0;
+  }
 }
 
 // The main entry point called from exec.c
-int vmprint(pagetable_t pagetable){
+void
+vmprint(pagetable_t pagetable)
+{
   printf("page table %p\n", pagetable);
-  return pgtblprint(pagetable, 0);
+  pgtblprint(pagetable, 1); // Start recursion at depth 1
 }
